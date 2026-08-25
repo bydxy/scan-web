@@ -1,62 +1,67 @@
-# Scan Web — 在线扫码工具
+# Scan · 极速扫码
 
-一个基于浏览器的二维码 / 条形码在线扫描识别网站。**纯前端本地处理**，图片与摄像头数据不上传服务器，保护用户隐私。
+基于浏览器的实时扫码 Web 应用：二维码 / 条形码多码型识别，**纯前端本地处理，数据不出设备**。UI 采用 iOS 26 Liquid Glass 风格。
 
-## ✨ 功能特性
+> 📱 手机浏览器打开即用，支持添加到主屏幕（PWA）
+> 🔗 在线地址：https://bydxy.github.io/scan-web/
 
-- 📷 **摄像头实时扫码**：调用设备摄像头，对准二维码即可自动识别
-- 🖼️ **图片上传识别**：支持上传本地图片或拖拽、粘贴截图进行解析
-- 🔍 **多码型支持**：二维码（QR Code）、条形码（EAN-13、Code 128 等）均可识别
-- 🔒 **隐私安全**：所有识别均在浏览器本地完成，无任何数据上传
-- 📱 **响应式设计**：适配手机、平板、桌面等各类屏幕
-- ⚡ **免安装即用**：打开网页即可使用，无需下载 App
+## 核心架构
 
-## 🛠️ 技术栈
-
-| 模块 | 技术 |
-|---|---|
-| 扫码引擎 | [html5-qrcode](https://github.com/mebjas/html5-qrcode) / jsQR |
-| 前端框架 | HTML5 + CSS3 + JavaScript |
-| 相机调用 | MediaDevices API (getUserMedia) |
-| 部署 | GitHub Pages / 静态托管 |
-
-## 🚀 快速开始
-
-```bash
-# 克隆项目
-git clone https://github.com/bydxy/scan-web.git
-
-# 进入目录
-cd scan-web
-
-# 本地预览（任选其一）
-python -m http.server 8080
-# 或使用 VS Code 的 Live Server 插件
+```
+Camera (getUserMedia)
+  │  requestVideoFrameCallback · 忙则丢帧绝不排队
+  ▼
+ROI 裁剪（cover 坐标映射）→ 清晰度评分筛掉模糊帧
+  │
+  ▼
+ScannerAdapter 双引擎 + 三级策略
+  ├─ Native BarcodeDetector   Android Chromium 零成本极速路径
+  │    └─ 能力检测链验证 getSupportedFormats()，运行期连续异常自动热降级
+  └─ ZXing-C++ WASM           Safari / Firefox / WebView 全覆盖
+       ├─ FAST   @640 ROI · 最小选项集
+       ├─ RESCUE @960 · tryHarder/Invert/Rotate/Downscale 全开（残缺/反色/歪斜）
+       └─ VARIANT· GlobalHistogram 二值化变体兜底
 ```
 
-浏览器访问 `http://localhost:8080` 即可使用。
+## 技术栈
 
-> 💡 摄像头功能需要 `HTTPS` 或 `localhost` 环境，这是浏览器的安全策略要求。
+| 层 | 选型 |
+|---|---|
+| 构建 | Vite 7 + TypeScript（零框架） |
+| 扫码 | 原生 BarcodeDetector + [zxing-wasm](https://github.com/Sec-ant/zxing-wasm)（动态 import 懒加载，同源自托管） |
+| UI | 纯 CSS Liquid Glass（`-apple-visual-effect` 渐进增强） |
+| PWA | manifest + Service Worker 运行时缓存 |
 
-## 📖 使用说明
+## 性能指标
 
-1. 打开网站，选择「相机扫码」或「图片识别」模式
-2. 授权浏览器使用摄像头（首次使用会弹出授权提示）
-3. 将二维码/条形码对准取景框，自动完成识别
-4. 识别结果支持一键复制、链接直接跳转
+- **首屏 gzip ≈ 9 KB**（HTML 1.4 + CSS 2.1 + JS 5.2），WASM 解码器 461KB gzip 独立懒加载，二次进入 HTTP 缓存零下载
+- 近距正常码目标命中 < 100ms；模糊帧直接跳过不浪费解码算力
+- 支持码型：QR / EAN-13 / EAN-8 / UPC-A / UPC-E / Code128 / Code39 / Code93 / ITF / Codabar / DataMatrix / PDF417 / Aztec
 
-## 🗺️ 开发计划
+## 功能
 
-- [ ] 生成二维码功能
-- [ ] 批量图片识别
-- [ ] 扫码历史记录（本地存储）
-- [ ] PWA 离线使用
-- [ ] 多语言支持
+- 📷 实时取景扫码（前后镜头切换、闪光灯能力检测）
+- 🖼️ 相册图片识别（直读文件，一步救援档）
+- 🕐 本机历史记录（最近 20 条，localStorage，不上传）
+- 📋 结果一键复制 / 链接直达跳转 / 震动反馈
+- 🔐 权限状态机引导（被拒/占用/无设备/非HTTPS 分场景提示）
 
-## 🤝 参与贡献
+## 本地开发
 
-欢迎提交 Issue 和 Pull Request！
+```bash
+npm install
+npm run dev      # 开发服务器
+npm run build    # 生产构建 → dist/
+```
 
-## 📄 许可证
+> 摄像头要求 HTTPS 或 localhost。
 
-[MIT License](LICENSE)
+## 文档
+
+- [技术调研报告](docs/技术调研报告.md) — 引擎选型对比
+- [移动端方案调研 V2](docs/移动端方案调研V2.md) — iOS 兼容要点与 Liquid Glass 实现
+- [架构决策记录](docs/ADR.md) — 关键技术决策及理由
+
+## 许可证
+
+[MIT](LICENSE)

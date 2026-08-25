@@ -267,3 +267,10 @@ ScannerAdapter.create().then((s) => {
   scanner = s;
   updateEngineBadge();
 });
+
+/* PWA：生产环境注册 Service Worker（离线壳 + 二次进入零下载） */
+if (import.meta.env.PROD && 'serviceWorker' in navigator) {
+  window.addEventListener('load', () => {
+    navigator.serviceWorker.register('./sw.js').catch(() => undefined);
+  });
+}
