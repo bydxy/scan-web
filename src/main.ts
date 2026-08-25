@@ -4,6 +4,7 @@ import { FramePipeline } from './pipeline.js';
 import type { FrameHits } from './pipeline.js';
 import { ScannerAdapter, scanImageFile } from './scanner/index.js';
 import type { ScanResult } from './scanner/index.js';
+import { classify, activate } from './apps.js';
 
 const $ = <T extends HTMLElement>(id: string) => document.getElementById(id) as T;
 
@@ -18,7 +19,9 @@ const scanHint = $<HTMLElement>('scan-hint');
 const resultSheet = $<HTMLElement>('result-sheet');
 const resultType = $<HTMLElement>('result-type');
 const resultText = $<HTMLElement>('result-text');
+const btnApp = $<HTMLButtonElement>('btn-app');
 const btnOpen = $<HTMLAnchorElement>('btn-open');
+const btnCopy = $<HTMLButtonElement>('btn-copy');
 const historySheet = $<HTMLElement>('history-sheet');
 const historyList = $<HTMLUListElement>('history-list');
 const permSheet = $<HTMLElement>('perm-sheet');
@@ -30,27 +33,36 @@ let scanner: ScannerAdapter | null = null;
 let pipeline: FramePipeline | null = null;
 let torchOn = false;
 
-/* ---------- 实时跟随标签 ---------- */
+/* ============================================================
+   实时跟踪标注层：SVG 四边形描边（贴着码的四个角，随大小伸缩）
+   + 内容 chip（骑在码框上方，随码移动）
+   ============================================================ */
+const SVG_NS = 'http://www.w3.org/2000/svg';
+
 interface LabelState {
-  el: HTMLElement;
+  outline: SVGPolygonElement;
+  chip: HTMLElement;
   lastSeen: number;
 }
 const labels = new Map<string, LabelState>();
-const overlayRoot = document.createElement('div');
-overlayRoot.id = 'label-overlay';
 
-/** ROI 像素坐标 → 屏幕坐标（逆推 grab 的裁剪缩放 + cover 变换） */
+const outlineSvg = document.createElementNS(SVG_NS, 'svg');
+outlineSvg.id = 'outline-layer';
+const chipLayer = document.createElement('div');
+chipLayer.id = 'chip-layer';
+
+/** 解码画面像素坐标 → 屏幕 CSS 坐标（逆推 grab 缩放 + cover 变换） */
 function roiToScreen(
   px: number,
   py: number,
-  roi: { x: number; y: number; w: number; h: number },
-  size: number
+  src: { x: number; y: number; w: number; h: number },
+  out: { w: number; h: number }
 ): [number, number] {
   const vw = video.videoWidth;
   const vh = video.videoHeight;
   if (!vw || !vh) return [-9999, -9999];
-  const vx = roi.x + (px / size) * roi.w;
-  const vy = roi.y + (py / size) * roi.h;
+  const vx = src.x + (px / out.w) * src.w;
+  const vy = src.y + (py / out.h) * src.h;
   const cw = window.innerWidth;
   const ch = window.innerHeight;
   const s = Math.max(cw / vw, ch / vh);
@@ -59,69 +71,98 @@ function roiToScreen(
   return [vx * s + ox, vy * s + oy];
 }
 
+function ensureLabel(text: string): LabelState {
+  let st = labels.get(text);
+  if (!st) {
+    const outline = document.createElementNS(SVG_NS, 'polygon');
+    outline.classList.add('code-outline');
+
+    const chip = document.createElement('div');
+    chip.className = 'code-chip';
+    chip.onclick = () => {
+      const r = currentHits.get(text);
+      if (r) presentResults(r);
+    };
+
+    outlineSvg.appendChild(outline);
+    chipLayer.appendChild(chip);
+    st = { outline, chip, lastSeen: Date.now() };
+    labels.set(text, st);
+  }
+  return st;
+}
+
+/** 本帧结果缓存：chip 点击时取最新内容 */
+const currentHits = new Map<string, ScanResult>();
+
 function updateLabels(hits: FrameHits): void {
   const now = Date.now();
   let newCodeFound = false;
 
   for (const r of hits.results) {
     if (!r.corners?.length) continue;
-    const xs = r.corners.map((c) => c.x);
-    const ys = r.corners.map((c) => c.y);
-    const minX = Math.min(...xs);
-    const minY = Math.min(...ys);
-    // 锚点：左上角外侧，随码移动
-    const [sx, sy] = roiToScreen(minX, minY, hits.roi, hits.size);
+    const pts = r.corners.map((c) => roiToScreen(c.x, c.y, hits.src, hits.out));
+    if (pts.some(([x]) => x < -999)) continue;
 
-    let state = labels.get(r.text);
-    if (!state) {
-      state = { el: createLabel(r), lastSeen: now };
-      labels.set(r.text, state);
-      overlayRoot.appendChild(state.el);
-      newCodeFound = true;
-    }
-    state.lastSeen = now;
-    state.el.style.transform = `translate3d(${sx}px, ${sy}px, 0)`;
+    currentHits.set(r.text, r);
+    const isNew = !labels.has(r.text);
+    const st = ensureLabel(r.text);
+    if (isNew) newCodeFound = true;
+
+    // 描边贴四个角：旋转/透视变形的码也能包住
+    st.outline.setAttribute(
+      'points',
+      pts.map(([x, y]) => `${x.toFixed(1)},${y.toFixed(1)}`).join(' ')
+    );
+
+    // chip 骑在包围盒上方；顶部空间不足则落到下方
+    const xs = pts.map(([x]) => x);
+    const ys = pts.map(([, y]) => y);
+    const minX = Math.min(...xs);
+    const maxX = Math.max(...xs);
+    const minY = Math.min(...ys);
+    const maxY = Math.max(...ys);
+
+    const resolved = classify(r.text);
+    st.chip.textContent = resolved.display;
+    const above = minY > 64;
+    st.chip.style.top = `${above ? minY - 44 : maxY + 10}px`;
+    st.chip.style.left = `${(minX + maxX) / 2}px`;
+    st.lastSeen = now;
   }
 
-  // 清理消失的码（800ms 未再见）
-  for (const [text, state] of labels) {
-    if (now - state.lastSeen > 800) {
-      state.el.remove();
+  // 800ms 未再见 → 移除
+  for (const [text, st] of labels) {
+    if (now - st.lastSeen > 800) {
+      st.outline.remove();
+      st.chip.remove();
       labels.delete(text);
+      currentHits.delete(text);
     }
   }
 
   if (newCodeFound) vibrate();
 }
 
-function createLabel(r: ScanResult): HTMLElement {
-  const el = document.createElement('div');
-  el.className = 'code-label';
-  el.textContent =
-    r.text.length > 26 ? r.text.slice(0, 25) + '…' : r.text;
-  el.onclick = () => presentResults([r]);
-  return el;
-}
-
 function clearLabels(): void {
-  labels.forEach((s) => s.el.remove());
+  labels.forEach((s) => {
+    s.outline.remove();
+    s.chip.remove();
+  });
   labels.clear();
-}
-
-/* ---------- 视图切换 ---------- */
-function show(view: HTMLElement): void {
-  document.querySelectorAll('.view').forEach((v) => v.classList.remove('view--active'));
-  view.classList.add('view--active');
-}
-
-function closeSheet(sheet: HTMLElement): void {
-  sheet.hidden = true;
+  currentHits.clear();
 }
 
 /* ---------- 历史 ---------- */
 const HISTORY_KEY = 'scan-web.history.v1';
 
-function loadHistory(): Array<{ text: string; format: string; at: number }> {
+interface HistoryItem {
+  text: string;
+  format: string;
+  at: number;
+}
+
+function loadHistory(): HistoryItem[] {
   try {
     return JSON.parse(localStorage.getItem(HISTORY_KEY) ?? '[]');
   } catch {
@@ -156,26 +197,54 @@ function renderHistory(): void {
     li.appendChild(meta);
     li.onclick = () => {
       closeSheet(historySheet);
-      presentResults([
-        { text: item.text, format: item.format, corners: [] },
-      ]);
+      presentResults({ text: item.text, format: item.format, corners: [] });
     };
     historyList.appendChild(li);
   }
 }
 
 /* ---------- 结果呈现 ---------- */
-function presentResults(results: ScanResult[]): void {
-  const first = results[0];
+function presentResults(r: ScanResult): void {
+  const resolved = classify(r.text);
+
+  // 标题：App 名 > 域名 > 类型名
   resultType.textContent =
-    first.format === 'QRCode' ? '二维码' : `条形码 · ${first.format}`;
-  resultText.textContent = first.text;
+    resolved.kind === 'app'
+      ? resolved.appName!
+      : resolved.kind === 'url'
+        ? `网页 · ${resolved.display}`
+        : resolved.kind === 'tel'
+          ? '电话号码'
+          : resolved.kind === 'mailto'
+            ? '邮件'
+            : '文本内容';
+  resultText.textContent = r.text;
 
-  const isUrl = /^https?:\/\//i.test(first.text);
-  btnOpen.hidden = !isUrl;
-  if (isUrl) btnOpen.href = first.text;
+  // 主按钮：打开 App / 拨号 / 复制
+  if (resolved.kind === 'app') {
+    btnApp.hidden = false;
+    btnApp.textContent = resolved.scheme ? `打开${resolved.appName}` : `访问${resolved.appName}`;
+    btnApp.onclick = () => activate(resolved);
+  } else if (resolved.kind === 'tel' || resolved.kind === 'mailto') {
+    btnApp.hidden = false;
+    btnApp.textContent = resolved.kind === 'tel' ? '拨打电话' : '发邮件';
+    btnApp.onclick = () => activate(resolved);
+  } else if (resolved.webUrl) {
+    btnApp.hidden = false;
+    btnApp.textContent = '打开链接';
+    btnApp.onclick = () => activate(resolved);
+  } else {
+    // 纯文本：一键复制即主操作
+    btnApp.hidden = false;
+    btnApp.textContent = '一键复制';
+    btnApp.onclick = () => void copyResult(true);
+  }
 
-  saveHistory(results);
+  const isHttp = !!resolved.webUrl && /^https?:\/\//i.test(resolved.webUrl);
+  btnOpen.hidden = !isHttp;
+  if (isHttp) btnOpen.href = resolved.webUrl!;
+
+  saveHistory([r]);
   resultSheet.hidden = false;
 }
 
@@ -183,16 +252,23 @@ function vibrate(): void {
   navigator.vibrate?.(30);
 }
 
-async function copyResult(): Promise<void> {
+async function copyResult(asPrimary = false): Promise<void> {
   try {
     await navigator.clipboard.writeText(resultText.textContent ?? '');
-    btnCopy.textContent = '已复制 ✓';
-    setTimeout(() => (btnCopy.textContent = '复制'), 1200);
+    const original = asPrimary ? btnApp.textContent : btnCopy.textContent;
+    if (asPrimary) {
+      btnApp.textContent = '已复制 ✓';
+    } else {
+      btnCopy.textContent = '已复制 ✓';
+    }
+    setTimeout(() => {
+      if (asPrimary) btnApp.textContent = original ?? '一键复制';
+      else btnCopy.textContent = original ?? '复制';
+    }, 1200);
   } catch {
     /* 剪贴板不可用时静默 */
   }
 }
-const btnCopy = $<HTMLButtonElement>('btn-copy');
 
 /* ---------- 扫描流程 ---------- */
 async function startScanning(): Promise<void> {
@@ -210,13 +286,12 @@ async function startScanning(): Promise<void> {
 
   pipeline ??= new FramePipeline(video, canvas, scanner, (hits) => {
     updateLabels(hits);
-    // 首个新码自动保存历史（跟踪模式下不打断扫描）
     saveHistory(hits.results);
   });
   pipeline.start();
-  scanView.appendChild(overlayRoot);
+  scanView.append(outlineSvg, chipLayer);
   show(scanView);
-  scanHint.textContent = '对准二维码 · 结果实时标注';
+  scanHint.textContent = '全屏识别 · 点按标注查看详情';
 }
 
 function resumeScanning(): void {
@@ -235,7 +310,6 @@ function updateEngineBadge(): void {
   const kind = scanner.engineKind;
   engineBadge.textContent =
     kind === 'native' ? '原生引擎' : kind === 'wasm' ? 'WASM 引擎' : '…';
-  // WASM 实际加载后（首次 detect）再刷新一次徽标
 }
 
 function showPermissionGuide(e: Error): void {
@@ -285,9 +359,6 @@ $('btn-rescan').onclick = () => {
   closeSheet(resultSheet);
   resumeScanning();
 };
-btnOpen.onclick = () => {
-  /* 新窗口打开由 target=_blank 处理 */
-};
 
 $('btn-history').onclick = () => {
   renderHistory();
@@ -302,23 +373,18 @@ $('btn-perm-retry').onclick = () => {
 $('btn-perm-close').onclick = () => closeSheet(permSheet);
 
 document.querySelectorAll('.sheet__backdrop').forEach((b) => {
-  (b as HTMLElement).onclick = () => closeAllSheetsExceptNone();
+  (b as HTMLElement).onclick = () => [historySheet, permSheet].forEach(closeSheet);
 });
-function closeAllSheetsExceptNone(): void {
-  // 点背景关闭非结果类 Sheet；结果 Sheet 需显式操作避免误触
-  [historySheet, permSheet].forEach(closeSheet);
-}
 
 $('file-input').onchange = async (e) => {
   const input = e.target as HTMLInputElement;
   const file = input.files?.[0];
   if (!file) return;
-  scanHint.textContent = '正在识别图片…';
   try {
     const results = await scanImageFile(file);
     if (results.length > 0) {
       vibrate();
-      presentResults(results);
+      presentResults(results[0]);
     } else {
       alert('未能识别出条码，请尝试更清晰的照片');
     }
@@ -341,6 +407,17 @@ document.addEventListener('visibilitychange', () => {
     resumeScanning();
   }
 });
+
+window.addEventListener('resize', clearLabels);
+
+function show(view: HTMLElement): void {
+  document.querySelectorAll('.view').forEach((v) => v.classList.remove('view--active'));
+  view.classList.add('view--active');
+}
+
+function closeSheet(sheet: HTMLElement): void {
+  sheet.hidden = true;
+}
 
 function closeSheets(): void {
   [resultSheet, historySheet, permSheet].forEach((s) => (s.hidden = true));

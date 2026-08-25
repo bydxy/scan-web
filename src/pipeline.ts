@@ -1,28 +1,31 @@
 import type { ScannerAdapter, ScanResult } from './scanner/index.js';
 
 /**
- * 高速抽帧管线（连续多码模式）
+ * 高速抽帧管线（连续多码 · 全屏识别模式）
  *
  * 铁律：忙则丢帧，绝不排队——解码落后时宁可跳帧，
  * 也不让识别停留在几百毫秒前的旧画面上。
  *
  * 命中后不停止：软复位阶梯（misses-=2），持续跟踪移动中的码。
  *
- * 分辨率/策略阶梯（连续未命中自动升级）：
- *   0-3 帧   fast  @640   极速档
- *   4-7 帧   fast  @960   远距离小码升分辨率
- *   8-15 帧  rescue@960   开启 try* 启发式（残缺/反色/歪斜）
- *   ≥16 帧   rescue@原图  最后手段
+ * 识别区域：整个可视画面（cover 裁切后的可见部分），
+ * 取景框仅为视觉引导。长边降采样阶梯：
+ *   0-3 帧   fast  @720   极速档（约 720×405，比旧 640² 更省）
+ *   4-7 帧   fast  @1080  小码升分辨率
+ *   8-15 帧  rescue@1080  开启 try* 启发式（残缺/反色/歪斜）
+ *   ≥16 帧   rescue@原生  最后手段
  */
 
-const ROI_FAST = 640;
-const ROI_HIGH = 960;
+const LONG_FAST = 720;
+const LONG_HIGH = 1080;
 const SHARP_SKIP_THRESHOLD = 6; // 拉普拉斯方差低于此视为运动模糊帧
 
 export interface FrameHits {
   results: ScanResult[];
-  roi: { x: number; y: number; w: number; h: number };
-  size: number; // 送解码的方形边长（像素）
+  /** 送解码画面对应的视频源区域 */
+  src: { x: number; y: number; w: number; h: number };
+  /** 解码画面实际尺寸（像素） */
+  out: { w: number; h: number };
 }
 
 export class FramePipeline {
@@ -83,21 +86,21 @@ export class FramePipeline {
     const { videoWidth: vw, videoHeight: vh } = this.video;
     if (!vw || !vh) return;
 
-    const [tier, size] = this.currentTier(vw, vh);
-    const roi = this.roiInVideo(vw, vh);
-    const imageData = this.grab(roi, Math.min(size, Math.max(roi.w, roi.h)));
-    if (!imageData) return;
+    const [tier, longSide] = this.currentTier(vw, vh);
+    const src = this.visibleRect(vw, vh);
+    const out = this.grab(src, longSide);
+    if (!out) return;
 
-    if (tier !== 'rescue' && !isSharpEnough(imageData)) {
+    if (tier !== 'rescue' && !isSharpEnough(out.imageData)) {
       this.misses++; // 模糊帧不送解码，直接计入升级阶梯
       return;
     }
 
     try {
-      const results = await this.scanner.detect(imageData, tier);
+      const results = await this.scanner.detect(out.imageData, tier);
       if (results.length > 0) {
         this.misses = Math.max(0, this.misses - 2); // 软复位，保持跟踪不降档震荡
-        this.onHits({ results, roi, size: imageData.width });
+        this.onHits({ results, src, out: { w: out.w, h: out.h } });
       } else {
         this.misses++;
       }
@@ -107,51 +110,44 @@ export class FramePipeline {
   }
 
   /** 策略阶梯 */
-  private currentTier(
-    vw: number,
-    vh: number
-  ): [tier: 'fast' | 'rescue', size: number] {
-    if (this.misses < 4) return ['fast', ROI_FAST];
-    if (this.misses < 8) return ['fast', ROI_HIGH];
-    if (this.misses < 16) return ['rescue', ROI_HIGH];
-    return ['rescue', Math.min(vw, vh)];
+  private currentTier(vw: number, vh: number): [tier: 'fast' | 'rescue', longSide: number] {
+    if (this.misses < 4) return ['fast', LONG_FAST];
+    if (this.misses < 8) return ['fast', LONG_HIGH];
+    if (this.misses < 16) return ['rescue', LONG_HIGH];
+    return ['rescue', Math.max(vw, vh)];
   }
 
   /**
-   * 取景框在视频像素坐标系中的位置。
-   * 屏幕上取景框为居中正方形（72% 短边），object-fit: cover 存在裁切偏移，
-   * 必须按 cover 缩放映射回视频坐标，否则扫到的区域和看到的区域不一致。
+   * 屏幕上实际可见的视频区域（object-fit: cover 裁掉了画面边缘，
+   * 只识别用户看得见的部分，避免给看不见的区域白付解码算力）。
    */
-  private roiInVideo(vw: number, vh: number): { x: number; y: number; w: number; h: number } {
+  private visibleRect(vw: number, vh: number): { x: number; y: number; w: number; h: number } {
     const cw = window.innerWidth;
     const ch = window.innerHeight;
-    const sideCss = Math.min(cw, ch) * 0.72;
     const scale = Math.max(cw / vw, ch / vh); // cover
-    const offsetX = (cw - vw * scale) / 2;
-    const offsetY = (ch - vh * scale) / 2;
-
-    const x = (-offsetX + (cw - sideCss) / 2) / scale;
-    const y = (-offsetY + (ch - sideCss) / 2) / scale;
-    const w = sideCss / scale;
-
-    // 裁到画面内并保证最小尺寸
-    const cx = Math.max(0, Math.min(x, vw - 16));
-    const cy = Math.max(0, Math.min(y, vh - 16));
-    const cw2 = Math.max(16, Math.min(w, vw - cx));
-    const ch2 = Math.max(16, Math.min(w, vh - cy));
-    return { x: cx, y: cy, w: cw2, h: ch2 };
+    const visW = Math.min(vw, cw / scale);
+    const visH = Math.min(vh, ch / scale);
+    return {
+      x: (vw - visW) / 2,
+      y: (vh - visH) / 2,
+      w: visW,
+      h: visH,
+    };
   }
 
   private grab(
-    roi: { x: number; y: number; w: number; h: number },
-    targetSize: number
-  ): ImageData | null {
+    src: { x: number; y: number; w: number; h: number },
+    longSide: number
+  ): { imageData: ImageData; w: number; h: number } | null {
     const ctx = this.canvas.getContext('2d', { willReadFrequently: true });
     if (!ctx) return null;
-    this.canvas.width = targetSize;
-    this.canvas.height = targetSize;
-    ctx.drawImage(this.video, roi.x, roi.y, roi.w, roi.h, 0, 0, targetSize, targetSize);
-    return ctx.getImageData(0, 0, targetSize, targetSize);
+    const k = longSide / Math.max(src.w, src.h);
+    const w = Math.round(src.w * k);
+    const h = Math.round(src.h * k);
+    this.canvas.width = w;
+    this.canvas.height = h;
+    ctx.drawImage(this.video, src.x, src.y, src.w, src.h, 0, 0, w, h);
+    return { imageData: ctx.getImageData(0, 0, w, h), w, h };
   }
 }
 

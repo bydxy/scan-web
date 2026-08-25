@@ -249,7 +249,7 @@ body {
   gap: 18px;
 }
 
-/* 取景框：中央窗口 + 四周压暗 */
+/* 取景框：全屏识别模式，仅作视觉引导 */
 .viewfinder {
   position: absolute;
   inset: 0;
@@ -264,15 +264,13 @@ body {
   width: min(72vw, 72vh);
   aspect-ratio: 1;
   border-radius: 28px;
-  /* 四周压暗、窗口透亮 */
-  box-shadow: 0 0 0 200vmax rgba(0, 0, 0, 0.55);
 }
 
 .corner {
   position: absolute;
   width: 34px;
   height: 34px;
-  border: 4px solid #fff;
+  border: 4px solid rgba(255, 255, 255, 0.85);
   animation: breathe 1.6s ease-in-out infinite;
 }
 
@@ -314,23 +312,41 @@ body {
   text-shadow: 0 1px 6px rgba(0, 0, 0, 0.8);
 }
 
-/* ---------- 实时跟随标签 ---------- */
-#label-overlay {
+/* ---------- 实时跟踪标注层 ---------- */
+#outline-layer {
   position: absolute;
   inset: 0;
+  width: 100%;
+  height: 100%;
   pointer-events: none;
   z-index: 5;
 }
 
-.code-label {
+.code-outline {
+  fill: rgba(10, 132, 255, 0.16);
+  stroke: var(--accent);
+  stroke-width: 3;
+  vector-effect: non-scaling-stroke;
+  stroke-linejoin: round;
+  filter: drop-shadow(0 0 6px rgba(10, 132, 255, 0.65));
+}
+
+#chip-layer {
   position: absolute;
-  left: 2px;
-  top: -38px;
-  max-width: 62vw;
-  padding: 6px 12px;
+  inset: 0;
+  pointer-events: none;
+  z-index: 6;
+}
+
+.code-chip {
+  position: absolute;
+  transform: translateX(-50%);
+  max-width: 70vw;
+  padding: 7px 14px;
   font-size: 13px;
   font-weight: 600;
   color: #fff;
+  text-align: center;
   background: rgba(10, 132, 255, 0.82);
   backdrop-filter: blur(10px) saturate(160%);
   -webkit-backdrop-filter: blur(10px) saturate(160%);
@@ -340,13 +356,11 @@ body {
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
-  transform-origin: left top;
   pointer-events: auto;
   cursor: pointer;
-  will-change: transform;
 }
 
-.code-label:active {
+.code-chip:active {
   opacity: 0.8;
 }
 
@@ -415,10 +429,12 @@ body {
 .sheet__actions {
   display: flex;
   gap: 12px;
+  flex-wrap: wrap;
 }
 
 .sheet__actions > * {
   flex: 1;
+  min-width: 100px;
   text-align: center;
   font-size: 16px;
   padding: 13px 8px;
