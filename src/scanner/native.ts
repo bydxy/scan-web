@@ -26,6 +26,23 @@ export class NativeEngine {
 
   async detect(source: ImageBitmapSource): Promise<ScanResult[]> {
     const found = await this.detector.detect(source);
-    return found.map((r) => ({ text: r.rawValue, format: r.format }));
+    return found.map((r) => ({
+      text: r.rawValue,
+      format: r.format,
+      corners:
+        r.cornerPoints?.map((p) => ({ x: p.x, y: p.y })) ??
+        (r.boundingBox
+          ? rectCorners(r.boundingBox)
+          : [{ x: 0, y: 0 }, { x: 0, y: 0 }, { x: 0, y: 0 }, { x: 0, y: 0 }]),
+    }));
   }
+}
+
+function rectCorners(b: DOMRectReadOnly) {
+  return [
+    { x: b.left, y: b.top },
+    { x: b.right, y: b.top },
+    { x: b.right, y: b.bottom },
+    { x: b.left, y: b.bottom },
+  ];
 }

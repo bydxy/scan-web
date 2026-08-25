@@ -1,6 +1,7 @@
 import './style.css';
 import { CameraManager } from './camera.js';
 import { FramePipeline } from './pipeline.js';
+import type { FrameHits } from './pipeline.js';
 import { ScannerAdapter, scanImageFile } from './scanner/index.js';
 import type { ScanResult } from './scanner/index.js';
 
@@ -29,6 +30,84 @@ let scanner: ScannerAdapter | null = null;
 let pipeline: FramePipeline | null = null;
 let torchOn = false;
 
+/* ---------- 实时跟随标签 ---------- */
+interface LabelState {
+  el: HTMLElement;
+  lastSeen: number;
+}
+const labels = new Map<string, LabelState>();
+const overlayRoot = document.createElement('div');
+overlayRoot.id = 'label-overlay';
+
+/** ROI 像素坐标 → 屏幕坐标（逆推 grab 的裁剪缩放 + cover 变换） */
+function roiToScreen(
+  px: number,
+  py: number,
+  roi: { x: number; y: number; w: number; h: number },
+  size: number
+): [number, number] {
+  const vw = video.videoWidth;
+  const vh = video.videoHeight;
+  if (!vw || !vh) return [-9999, -9999];
+  const vx = roi.x + (px / size) * roi.w;
+  const vy = roi.y + (py / size) * roi.h;
+  const cw = window.innerWidth;
+  const ch = window.innerHeight;
+  const s = Math.max(cw / vw, ch / vh);
+  const ox = (cw - vw * s) / 2;
+  const oy = (ch - vh * s) / 2;
+  return [vx * s + ox, vy * s + oy];
+}
+
+function updateLabels(hits: FrameHits): void {
+  const now = Date.now();
+  let newCodeFound = false;
+
+  for (const r of hits.results) {
+    if (!r.corners?.length) continue;
+    const xs = r.corners.map((c) => c.x);
+    const ys = r.corners.map((c) => c.y);
+    const minX = Math.min(...xs);
+    const minY = Math.min(...ys);
+    // 锚点：左上角外侧，随码移动
+    const [sx, sy] = roiToScreen(minX, minY, hits.roi, hits.size);
+
+    let state = labels.get(r.text);
+    if (!state) {
+      state = { el: createLabel(r), lastSeen: now };
+      labels.set(r.text, state);
+      overlayRoot.appendChild(state.el);
+      newCodeFound = true;
+    }
+    state.lastSeen = now;
+    state.el.style.transform = `translate3d(${sx}px, ${sy}px, 0)`;
+  }
+
+  // 清理消失的码（800ms 未再见）
+  for (const [text, state] of labels) {
+    if (now - state.lastSeen > 800) {
+      state.el.remove();
+      labels.delete(text);
+    }
+  }
+
+  if (newCodeFound) vibrate();
+}
+
+function createLabel(r: ScanResult): HTMLElement {
+  const el = document.createElement('div');
+  el.className = 'code-label';
+  el.textContent =
+    r.text.length > 26 ? r.text.slice(0, 25) + '…' : r.text;
+  el.onclick = () => presentResults([r]);
+  return el;
+}
+
+function clearLabels(): void {
+  labels.forEach((s) => s.el.remove());
+  labels.clear();
+}
+
 /* ---------- 视图切换 ---------- */
 function show(view: HTMLElement): void {
   document.querySelectorAll('.view').forEach((v) => v.classList.remove('view--active'));
@@ -52,12 +131,14 @@ function loadHistory(): Array<{ text: string; format: string; at: number }> {
 
 function saveHistory(results: ScanResult[]): void {
   const items = loadHistory();
+  let changed = false;
   for (const r of results) {
     if (!items.some((i) => i.text === r.text)) {
       items.unshift({ ...r, at: Date.now() });
+      changed = true;
     }
   }
-  localStorage.setItem(HISTORY_KEY, JSON.stringify(items.slice(0, 20)));
+  if (changed) localStorage.setItem(HISTORY_KEY, JSON.stringify(items.slice(0, 20)));
 }
 
 function renderHistory(): void {
@@ -75,7 +156,9 @@ function renderHistory(): void {
     li.appendChild(meta);
     li.onclick = () => {
       closeSheet(historySheet);
-      presentResults([{ text: item.text, format: item.format }]);
+      presentResults([
+        { text: item.text, format: item.format, corners: [] },
+      ]);
     };
     historyList.appendChild(li);
   }
@@ -125,15 +208,15 @@ async function startScanning(): Promise<void> {
     return;
   }
 
-  pipeline ??= new FramePipeline(video, canvas, scanner, (results) => {
-    vibrate();
-    pipeline!.stop();
-    camera.setTorch(false);
-    presentResults(results);
+  pipeline ??= new FramePipeline(video, canvas, scanner, (hits) => {
+    updateLabels(hits);
+    // 首个新码自动保存历史（跟踪模式下不打断扫描）
+    saveHistory(hits.results);
   });
   pipeline.start();
+  scanView.appendChild(overlayRoot);
   show(scanView);
-  scanHint.textContent = '对准二维码 / 条形码';
+  scanHint.textContent = '对准二维码 · 结果实时标注';
 }
 
 function resumeScanning(): void {
@@ -144,6 +227,7 @@ function resumeScanning(): void {
 function stopScanning(): void {
   pipeline?.stop();
   camera.stop();
+  clearLabels();
 }
 
 function updateEngineBadge(): void {

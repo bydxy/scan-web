@@ -314,6 +314,42 @@ body {
   text-shadow: 0 1px 6px rgba(0, 0, 0, 0.8);
 }
 
+/* ---------- 实时跟随标签 ---------- */
+#label-overlay {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  z-index: 5;
+}
+
+.code-label {
+  position: absolute;
+  left: 2px;
+  top: -38px;
+  max-width: 62vw;
+  padding: 6px 12px;
+  font-size: 13px;
+  font-weight: 600;
+  color: #fff;
+  background: rgba(10, 132, 255, 0.82);
+  backdrop-filter: blur(10px) saturate(160%);
+  -webkit-backdrop-filter: blur(10px) saturate(160%);
+  border: 1px solid rgba(255, 255, 255, 0.4);
+  border-radius: 12px;
+  box-shadow: 0 4px 18px rgba(0, 0, 0, 0.4);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  transform-origin: left top;
+  pointer-events: auto;
+  cursor: pointer;
+  will-change: transform;
+}
+
+.code-label:active {
+  opacity: 0.8;
+}
+
 /* ---------- 底部 Sheet ---------- */
 .sheet {
   position: fixed;

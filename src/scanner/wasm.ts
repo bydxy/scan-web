@@ -26,10 +26,10 @@ async function loadModule(): Promise<WasmModule> {
   return modulePromise;
 }
 
-/** 极速档：最小选项集。注意 zxing-wasm 默认 try* 全开，必须显式关闭 */
+/** 极速档：多符号并行（多码同框），try* 关闭保速度 */
 const FAST_OPTIONS: ReaderOptions = {
   formats: [...ZXING_FORMATS],
-  maxNumberOfSymbols: 1,
+  maxNumberOfSymbols: 8,
   tryHarder: false,
   tryRotate: false,
   tryInvert: false,
@@ -40,6 +40,7 @@ const FAST_OPTIONS: ReaderOptions = {
 /** 救援档：残缺/污损/反色码，全量启发式 */
 const RESCUE_OPTIONS: ReaderOptions = {
   ...FAST_OPTIONS,
+  maxNumberOfSymbols: 16,
   tryHarder: true,
   tryRotate: true,
   tryInvert: true,
@@ -68,7 +69,16 @@ export class WasmEngine {
     for (const options of passes) {
       const found = await readBarcodes(imageData, options);
       if (found.length > 0) {
-        return found.map((r) => ({ text: r.text, format: r.format }));
+        return found.map((r) => ({
+          text: r.text,
+          format: r.format,
+          corners: [
+            r.position.topLeft,
+            r.position.topRight,
+            r.position.bottomRight,
+            r.position.bottomLeft,
+          ],
+        }));
       }
     }
     return [];
@@ -79,5 +89,14 @@ export class WasmEngine {
 export async function scanImageFile(file: File): Promise<ScanResult[]> {
   const { readBarcodesFromImageFile } = await loadModule();
   const found = await readBarcodesFromImageFile(file, RESCUE_OPTIONS);
-  return found.map((r) => ({ text: r.text, format: r.format }));
+  return found.map((r) => ({
+    text: r.text,
+    format: r.format,
+    corners: [
+      r.position.topLeft,
+      r.position.topRight,
+      r.position.bottomRight,
+      r.position.bottomLeft,
+    ],
+  }));
 }

@@ -1,13 +1,15 @@
 import type { ScannerAdapter, ScanResult } from './scanner/index.js';
 
 /**
- * 高速抽帧管线
+ * 高速抽帧管线（连续多码模式）
  *
  * 铁律：忙则丢帧，绝不排队——解码落后时宁可跳帧，
  * 也不让识别停留在几百毫秒前的旧画面上。
  *
- * 分辨率/策略阶梯（连续未命中自动升级，命中即复位）：
- *   0-3 帧   fast  @640   极速档，近距正常码 <50ms 命中
+ * 命中后不停止：软复位阶梯（misses-=2），持续跟踪移动中的码。
+ *
+ * 分辨率/策略阶梯（连续未命中自动升级）：
+ *   0-3 帧   fast  @640   极速档
  *   4-7 帧   fast  @960   远距离小码升分辨率
  *   8-15 帧  rescue@960   开启 try* 启发式（残缺/反色/歪斜）
  *   ≥16 帧   rescue@原图  最后手段
@@ -15,7 +17,13 @@ import type { ScannerAdapter, ScanResult } from './scanner/index.js';
 
 const ROI_FAST = 640;
 const ROI_HIGH = 960;
-const SHARP_SKIP_THRESHOLD = 12; // 拉普拉斯方差低于此视为运动模糊帧
+const SHARP_SKIP_THRESHOLD = 6; // 拉普拉斯方差低于此视为运动模糊帧
+
+export interface FrameHits {
+  results: ScanResult[];
+  roi: { x: number; y: number; w: number; h: number };
+  size: number; // 送解码的方形边长（像素）
+}
 
 export class FramePipeline {
   private rafId = 0;
@@ -27,7 +35,7 @@ export class FramePipeline {
     private video: HTMLVideoElement,
     private canvas: HTMLCanvasElement,
     private scanner: ScannerAdapter,
-    private onResult: (results: ScanResult[]) => void
+    private onHits: (hits: FrameHits) => void
   ) {}
 
   start(): void {
@@ -88,8 +96,8 @@ export class FramePipeline {
     try {
       const results = await this.scanner.detect(imageData, tier);
       if (results.length > 0) {
-        this.resetTier();
-        this.onResult(results);
+        this.misses = Math.max(0, this.misses - 2); // 软复位，保持跟踪不降档震荡
+        this.onHits({ results, roi, size: imageData.width });
       } else {
         this.misses++;
       }
