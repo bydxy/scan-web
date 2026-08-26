@@ -1,9 +1,23 @@
-/* Scan · 运行时缓存（stale-while-revalidate）：二次进入零下载可用 */
-const CACHE = 'scan-web-v1';
+/* Scan · Service Worker v2
+   - 版本化缓存 + 旧缓存自动清理
+   - 接管控制权后向页面广播 UPDATED，由页面提示刷新 */
+const CACHE = 'scan-web-v2';
 
 self.addEventListener('install', () => self.skipWaiting());
 
-self.addEventListener('activate', (e) => e.waitUntil(clients.claim()));
+self.addEventListener('activate', (e) => {
+  e.waitUntil(
+    (async () => {
+      const names = await caches.keys();
+      await Promise.all(
+        names.filter((n) => n !== CACHE).map((n) => caches.delete(n))
+      );
+      const clients = await self.clients.matchAll({ type: 'window' });
+      for (const c of clients) c.postMessage({ type: 'UPDATED' });
+      await self.clients.claim();
+    })()
+  );
+});
 
 self.addEventListener('fetch', (e) => {
   const req = e.request;

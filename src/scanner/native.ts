@@ -1,17 +1,18 @@
-import { NATIVE_FORMATS } from './formats.js';
+import { GROUPS } from '../formats.js';
+import type { FormatGroup } from '../formats.js';
 import type { ScanResult } from './types.js';
 
 /**
  * 原生引擎能力探测：
  * 仅凭 'BarcodeDetector' in window 不够，必须验证 getSupportedFormats()
- * 覆盖全部目标码型；任何异常都视为不可用（微信/魔改 WebView 兜底）。
+ * 覆盖当前分组全部码型；任何异常都视为不可用。
  */
-export async function probeNative(): Promise<boolean> {
+export async function probeNative(group: FormatGroup): Promise<boolean> {
   if (!('BarcodeDetector' in globalThis)) return false;
   try {
     const supported = await BarcodeDetector.getSupportedFormats();
     const set = new Set(supported);
-    return NATIVE_FORMATS.every((f) => set.has(f));
+    return GROUPS[group].native.every((f) => set.has(f));
   } catch {
     return false;
   }
@@ -20,8 +21,8 @@ export async function probeNative(): Promise<boolean> {
 export class NativeEngine {
   private detector: BarcodeDetector;
 
-  constructor() {
-    this.detector = new BarcodeDetector({ formats: [...NATIVE_FORMATS] });
+  constructor(group: FormatGroup) {
+    this.detector = new BarcodeDetector({ formats: [...GROUPS[group].native] });
   }
 
   async detect(source: ImageBitmapSource): Promise<ScanResult[]> {
@@ -31,9 +32,7 @@ export class NativeEngine {
       format: r.format,
       corners:
         r.cornerPoints?.map((p) => ({ x: p.x, y: p.y })) ??
-        (r.boundingBox
-          ? rectCorners(r.boundingBox)
-          : [{ x: 0, y: 0 }, { x: 0, y: 0 }, { x: 0, y: 0 }, { x: 0, y: 0 }]),
+        (r.boundingBox ? rectCorners(r.boundingBox) : emptyCorners()),
     }));
   }
 }
@@ -46,3 +45,5 @@ function rectCorners(b: DOMRectReadOnly) {
     { x: b.left, y: b.bottom },
   ];
 }
+
+const emptyCorners = () => [{ x: 0, y: 0 }, { x: 0, y: 0 }, { x: 0, y: 0 }, { x: 0, y: 0 }];

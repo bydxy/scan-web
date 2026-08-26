@@ -1,10 +1,19 @@
-import './style.css';
+﻿import './style.css';
 import { CameraManager } from './camera.js';
 import { FramePipeline } from './pipeline.js';
 import type { FrameHits } from './pipeline.js';
 import { ScannerAdapter, scanImageFile } from './scanner/index.js';
 import type { ScanResult } from './scanner/index.js';
-import { classify, activate } from './apps.js';
+import type { FormatGroup } from './formats.js';
+import { classify } from './apps.js';
+import { getSettings, updateSettings, applySettings } from './settings.js';
+import * as history from './history.js';
+import { LabelOverlay } from './ui/labels.js';
+import { presentResults, bindBatchActions } from './ui/results.js';
+import { openHistorySheet } from './ui/history-ui.js';
+import { openSettingsSheet, bindSettings, runStartupClean } from './ui/settings-ui.js';
+import { openQrSheet, rememberOriginal } from './ui/qrsheet.js';
+import { toast, vibrate, beep } from './ui/feedback.js';
 
 const $ = <T extends HTMLElement>(id: string) => document.getElementById(id) as T;
 
@@ -14,284 +23,124 @@ const video = $<HTMLVideoElement>('camera');
 const canvas = $<HTMLCanvasElement>('frame-buffer');
 const engineBadge = $<HTMLElement>('engine-badge');
 const btnTorch = $<HTMLButtonElement>('btn-torch');
-const scanHint = $<HTMLElement>('scan-hint');
+const btnArea = $<HTMLButtonElement>('btn-area');
+const btnGroup = $<HTMLButtonElement>('btn-group');
+const btnMode = $<HTMLButtonElement>('btn-mode');
+const zoomSlider = $<HTMLInputElement>('zoom-slider');
 
-const resultSheet = $<HTMLElement>('result-sheet');
-const resultType = $<HTMLElement>('result-type');
-const resultText = $<HTMLElement>('result-text');
-const btnApp = $<HTMLButtonElement>('btn-app');
-const btnOpen = $<HTMLAnchorElement>('btn-open');
-const btnCopy = $<HTMLButtonElement>('btn-copy');
-const historySheet = $<HTMLElement>('history-sheet');
-const historyList = $<HTMLUListElement>('history-list');
-const permSheet = $<HTMLElement>('perm-sheet');
-const permTitle = $<HTMLElement>('perm-title');
-const permDesc = $<HTMLElement>('perm-desc');
-
-const camera = new CameraManager();
+/* ---------- 全局状态 ---------- */
 let scanner: ScannerAdapter | null = null;
 let pipeline: FramePipeline | null = null;
+let overlay: LabelOverlay | null = null;
 let torchOn = false;
+const seenSession = new Set<string>();
+const dupWarned = new Set<string>();
 
-/* ============================================================
-   实时跟踪标注层：SVG 四边形描边（贴着码的四个角，随大小伸缩）
-   + 内容 chip（骑在码框上方，随码移动）
-   ============================================================ */
-const SVG_NS = 'http://www.w3.org/2000/svg';
-
-interface LabelState {
-  outline: SVGPolygonElement;
-  chip: HTMLElement;
-  lastSeen: number;
-}
-const labels = new Map<string, LabelState>();
-
-const outlineSvg = document.createElementNS(SVG_NS, 'svg');
-outlineSvg.id = 'outline-layer';
-const chipLayer = document.createElement('div');
-chipLayer.id = 'chip-layer';
-
-/** 解码画面像素坐标 → 屏幕 CSS 坐标（逆推 grab 缩放 + cover 变换） */
-function roiToScreen(
-  px: number,
-  py: number,
-  src: { x: number; y: number; w: number; h: number },
-  out: { w: number; h: number }
-): [number, number] {
-  const vw = video.videoWidth;
-  const vh = video.videoHeight;
-  if (!vw || !vh) return [-9999, -9999];
-  const vx = src.x + (px / out.w) * src.w;
-  const vy = src.y + (py / out.h) * src.h;
-  const cw = window.innerWidth;
-  const ch = window.innerHeight;
-  const s = Math.max(cw / vw, ch / vh);
-  const ox = (cw - vw * s) / 2;
-  const oy = (ch - vh * s) / 2;
-  return [vx * s + ox, vy * s + oy];
-}
-
-function ensureLabel(text: string): LabelState {
-  let st = labels.get(text);
-  if (!st) {
-    const outline = document.createElementNS(SVG_NS, 'polygon');
-    outline.classList.add('code-outline');
-
-    const chip = document.createElement('div');
-    chip.className = 'code-chip';
-    chip.onclick = () => {
-      const r = currentHits.get(text);
-      if (r) presentResults(r);
-    };
-
-    outlineSvg.appendChild(outline);
-    chipLayer.appendChild(chip);
-    st = { outline, chip, lastSeen: Date.now() };
-    labels.set(text, st);
-  }
-  return st;
-}
-
-/** 本帧结果缓存：chip 点击时取最新内容 */
-const currentHits = new Map<string, ScanResult>();
-
-function updateLabels(hits: FrameHits): void {
-  const now = Date.now();
-  let newCodeFound = false;
+/* ---------- 识别命中处理 ---------- */
+function onHits(hits: FrameHits): void {
+  overlay!.update(hits);
 
   for (const r of hits.results) {
-    if (!r.corners?.length) continue;
-    const pts = r.corners.map((c) => roiToScreen(c.x, c.y, hits.src, hits.out));
-    if (pts.some(([x]) => x < -999)) continue;
-
-    currentHits.set(r.text, r);
-    const isNew = !labels.has(r.text);
-    const st = ensureLabel(r.text);
-    if (isNew) newCodeFound = true;
-
-    // 描边贴四个角：旋转/透视变形的码也能包住
-    st.outline.setAttribute(
-      'points',
-      pts.map(([x, y]) => `${x.toFixed(1)},${y.toFixed(1)}`).join(' ')
-    );
-
-    // chip 骑在包围盒上方；顶部空间不足则落到下方
-    const xs = pts.map(([x]) => x);
-    const ys = pts.map(([, y]) => y);
-    const minX = Math.min(...xs);
-    const maxX = Math.max(...xs);
-    const minY = Math.min(...ys);
-    const maxY = Math.max(...ys);
-
-    const resolved = classify(r.text);
-    st.chip.textContent = resolved.display;
-    const above = minY > 64;
-    st.chip.style.top = `${above ? minY - 44 : maxY + 10}px`;
-    st.chip.style.left = `${(minX + maxX) / 2}px`;
-    st.lastSeen = now;
-  }
-
-  // 800ms 未再见 → 移除
-  for (const [text, st] of labels) {
-    if (now - st.lastSeen > 800) {
-      st.outline.remove();
-      st.chip.remove();
-      labels.delete(text);
-      currentHits.delete(text);
+    const kind = classify(r.text).kind;
+    const isNewToStore = !history.has(r.text);
+    if (getSettings().saveHistory && isNewToStore) {
+      history.add(r.text, r.format, kind);
+      feedbackNew();
+      maybeAutoOpen(r);
     }
-  }
-
-  if (newCodeFound) vibrate();
-}
-
-function clearLabels(): void {
-  labels.forEach((s) => {
-    s.outline.remove();
-    s.chip.remove();
-  });
-  labels.clear();
-  currentHits.clear();
-}
-
-/* ---------- 历史 ---------- */
-const HISTORY_KEY = 'scan-web.history.v1';
-
-interface HistoryItem {
-  text: string;
-  format: string;
-  at: number;
-}
-
-function loadHistory(): HistoryItem[] {
-  try {
-    return JSON.parse(localStorage.getItem(HISTORY_KEY) ?? '[]');
-  } catch {
-    return [];
-  }
-}
-
-function saveHistory(results: ScanResult[]): void {
-  const items = loadHistory();
-  let changed = false;
-  for (const r of results) {
-    if (!items.some((i) => i.text === r.text)) {
-      items.unshift({ ...r, at: Date.now() });
-      changed = true;
+    if (seenSession.has(r.text) && !dupWarned.has(r.text)) {
+      dupWarned.add(r.text);
+      toast('该内容本次会话已扫过');
     }
-  }
-  if (changed) localStorage.setItem(HISTORY_KEY, JSON.stringify(items.slice(0, 20)));
-}
-
-function renderHistory(): void {
-  historyList.innerHTML = '';
-  const items = loadHistory();
-  if (items.length === 0) {
-    historyList.innerHTML = '<li>暂无记录<span>扫一扫，记录会保存在本机</span></li>';
-    return;
-  }
-  for (const item of items) {
-    const li = document.createElement('li');
-    li.textContent = item.text;
-    const meta = document.createElement('span');
-    meta.textContent = `${item.format} · ${new Date(item.at).toLocaleString()}`;
-    li.appendChild(meta);
-    li.onclick = () => {
-      closeSheet(historySheet);
-      presentResults({ text: item.text, format: item.format, corners: [] });
-    };
-    historyList.appendChild(li);
+    seenSession.add(r.text);
+    captureOriginal(r, hits);
   }
 }
 
-/* ---------- 结果呈现 ---------- */
-function presentResults(r: ScanResult): void {
+function feedbackNew(): void {
+  if (getSettings().vibrate) vibrate(30);
+  if (getSettings().sound) beep();
+}
+
+function maybeAutoOpen(r: ScanResult): void {
+  if (!getSettings().autoOpen) return;
   const resolved = classify(r.text);
-
-  // 标题：App 名 > 域名 > 类型名
-  resultType.textContent =
-    resolved.kind === 'app'
-      ? resolved.appName!
-      : resolved.kind === 'url'
-        ? `网页 · ${resolved.display}`
-        : resolved.kind === 'tel'
-          ? '电话号码'
-          : resolved.kind === 'mailto'
-            ? '邮件'
-            : '文本内容';
-  resultText.textContent = r.text;
-
-  // 主按钮：打开 App / 拨号 / 复制
-  if (resolved.kind === 'app') {
-    btnApp.hidden = false;
-    btnApp.textContent = resolved.scheme ? `打开${resolved.appName}` : `访问${resolved.appName}`;
-    btnApp.onclick = () => activate(resolved);
-  } else if (resolved.kind === 'tel' || resolved.kind === 'mailto') {
-    btnApp.hidden = false;
-    btnApp.textContent = resolved.kind === 'tel' ? '拨打电话' : '发邮件';
-    btnApp.onclick = () => activate(resolved);
-  } else if (resolved.webUrl) {
-    btnApp.hidden = false;
-    btnApp.textContent = '打开链接';
-    btnApp.onclick = () => activate(resolved);
-  } else {
-    // 纯文本：一键复制即主操作
-    btnApp.hidden = false;
-    btnApp.textContent = '一键复制';
-    btnApp.onclick = () => void copyResult(true);
+  if (resolved.kind === 'url' && !resolved.risk?.includes('HTTP')) {
+    resolved.actions?.find((a) => a.label === '打开链接')?.run();
   }
-
-  const isHttp = !!resolved.webUrl && /^https?:\/\//i.test(resolved.webUrl);
-  btnOpen.hidden = !isHttp;
-  if (isHttp) btnOpen.href = resolved.webUrl!;
-
-  saveHistory([r]);
-  resultSheet.hidden = false;
 }
 
-function vibrate(): void {
-  navigator.vibrate?.(30);
+/** 原图裁剪：按码包围盒从视频帧裁高清 PNG（保留原始颜色/Logo/样式） */
+function captureOriginal(r: ScanResult, hits: FrameHits): void {
+  if (!r.corners?.length || !video.videoWidth) return;
+  const vw = video.videoWidth;
+  const vh = video.videoHeight;
+  const vx = r.corners.map((c) => hits.src.x + (c.x / hits.out.w) * hits.src.w);
+  const vy = r.corners.map((c) => hits.src.y + (c.y / hits.out.h) * hits.src.h);
+  const pad = Math.max((Math.max(...vx) - Math.min(...vx)) * 0.12, 8);
+  const x = Math.max(0, Math.min(...vx) - pad);
+  const y = Math.max(0, Math.min(...vy) - pad);
+  const w = Math.min(vw - x, Math.max(...vx) + pad - x);
+  const h = Math.min(vh - y, Math.max(...vy) + pad - y);
+  if (w <= 8 || h <= 8) return;
+
+  const c2 = document.createElement('canvas');
+  c2.width = Math.round(w);
+  c2.height = Math.round(h);
+  c2.getContext('2d')!.drawImage(video, x, y, w, h, 0, 0, c2.width, c2.height);
+  rememberOriginal(r.text, c2.toDataURL('image/png'));
 }
 
-async function copyResult(asPrimary = false): Promise<void> {
-  try {
-    await navigator.clipboard.writeText(resultText.textContent ?? '');
-    const original = asPrimary ? btnApp.textContent : btnCopy.textContent;
-    if (asPrimary) {
-      btnApp.textContent = '已复制 ✓';
-    } else {
-      btnCopy.textContent = '已复制 ✓';
-    }
-    setTimeout(() => {
-      if (asPrimary) btnApp.textContent = original ?? '一键复制';
-      else btnCopy.textContent = original ?? '复制';
-    }, 1200);
-  } catch {
-    /* 剪贴板不可用时静默 */
+/* ---------- 结果呈现（单次模式弹出即停流） ---------- */
+const resultHooks = {
+  onGenerateQr: (text: string) => openQrSheet(text),
+  onExportJson: () => history.exportJSON(),
+};
+
+function presentForMode(results: ScanResult[]): void {
+  presentResults(results, resultHooks);
+  if (getSettings().mode === 'single') {
+    pipeline?.stop();
+    camera.setTorch(false);
   }
 }
 
 /* ---------- 扫描流程 ---------- */
 async function startScanning(): Promise<void> {
-  scanner ??= await ScannerAdapter.create();
+  const s = getSettings();
+  applySettings(s);
+  scanner ??= await ScannerAdapter.create(s.group);
+  await scanner.setGroup(s.group);
   updateEngineBadge();
 
   try {
-    const torch = await camera.start(video);
-    btnTorch.hidden = !torch.supported;
+    const caps = await camera.start(video);
+    btnTorch.hidden = !caps.torch;
+    zoomSlider.hidden = !caps.zoom;
+    if (caps.zoom) {
+      zoomSlider.min = String(caps.zoom.min);
+      zoomSlider.max = String(caps.zoom.max);
+      zoomSlider.step = String(caps.zoom.step);
+      zoomSlider.value = String(caps.zoom.value);
+    }
     torchOn = false;
   } catch (e) {
     showPermissionGuide(e as Error);
     return;
   }
 
-  pipeline ??= new FramePipeline(video, canvas, scanner, (hits) => {
-    updateLabels(hits);
-    saveHistory(hits.results);
-  });
+  pipeline ??= new FramePipeline(
+    video,
+    canvas,
+    scanner,
+    onHits,
+    ({ lowLight }) => ($<HTMLElement>('low-hint').hidden = !lowLight)
+  );
   pipeline.start();
-  scanView.append(outlineSvg, chipLayer);
+  overlay ??= new LabelOverlay(video, (r) => presentForMode([r]));
+  overlay.mount(scanView);
   show(scanView);
-  scanHint.textContent = '全屏识别 · 点按标注查看详情';
+  syncControlLabels();
 }
 
 function resumeScanning(): void {
@@ -302,14 +151,27 @@ function resumeScanning(): void {
 function stopScanning(): void {
   pipeline?.stop();
   camera.stop();
-  clearLabels();
+  overlay?.clear();
+}
+
+function stopScanningToHome(): void {
+  stopScanning();
+  closeSheets();
+  show(homeView);
 }
 
 function updateEngineBadge(): void {
-  if (!scanner) return;
-  const kind = scanner.engineKind;
+  const kind = scanner?.engineKind;
   engineBadge.textContent =
     kind === 'native' ? '原生引擎' : kind === 'wasm' ? 'WASM 引擎' : '…';
+}
+
+function syncControlLabels(): void {
+  const s = getSettings();
+  btnArea.textContent = s.area === 'viewfinder' ? '取景框' : '全屏';
+  btnGroup.textContent =
+    s.group === 'all' ? '全部码型' : s.group === 'qr' ? '仅二维码' : '仅条形码';
+  btnMode.textContent = s.mode === 'continuous' ? '连续' : '单次';
 }
 
 function showPermissionGuide(e: Error): void {
@@ -322,23 +184,41 @@ function showPermissionGuide(e: Error): void {
     REQUEST_FAILED: ['启动失败', '相机请求失败，请重试'],
   };
   const [title, desc] = messages[e.name] ?? messages.REQUEST_FAILED;
-  permTitle.textContent = title;
-  permDesc.textContent = desc;
-  permSheet.hidden = false;
+  $('perm-title').textContent = title;
+  $('perm-desc').textContent = desc;
+  $<HTMLElement>('perm-sheet').hidden = false;
 }
+
+/* ---------- 视图与弹层 ---------- */
+function show(view: HTMLElement): void {
+  document.querySelectorAll('.view').forEach((v) => v.classList.remove('view--active'));
+  view.classList.add('view--active');
+}
+
+function closeSheets(): void {
+  ['result-sheet', 'history-sheet', 'settings-sheet', 'perm-sheet', 'qr-sheet'].forEach(
+    (id) => ($<HTMLElement>(id).hidden = true)
+  );
+}
+
+/* ---------- 相机 ---------- */
+const camera = new CameraManager();
+camera.onStreamLost = () => {
+  toast('相机连接中断，请重新开始扫描');
+  stopScanningToHome();
+};
 
 /* ---------- 事件绑定 ---------- */
 $('btn-start').onclick = () => void startScanning();
-$('btn-back').onclick = () => {
-  stopScanning();
-  closeSheets();
-  show(homeView);
-};
+$('btn-back').onclick = stopScanningToHome;
+
 $('btn-flip').onclick = async () => {
-  const torch = await camera.flip(video).catch(() => ({ supported: false }));
-  btnTorch.hidden = !torch.supported;
+  const caps = await camera.flip(video).catch(() => null);
+  btnTorch.hidden = !caps?.torch;
+  zoomSlider.hidden = !caps?.zoom;
   pipeline?.resetTier();
 };
+
 $('btn-pause').onclick = (e) => {
   const btn = e.currentTarget as HTMLButtonElement;
   if (btn.textContent === '暂停') {
@@ -349,31 +229,59 @@ $('btn-pause').onclick = (e) => {
     btn.textContent = '暂停';
   }
 };
+
 btnTorch.onclick = () => {
   torchOn = !torchOn;
   camera.setTorch(torchOn);
 };
 
-btnCopy.onclick = () => void copyResult();
+zoomSlider.oninput = () => camera.setZoom(Number(zoomSlider.value));
+
+btnArea.onclick = () => {
+  const next = getSettings().area === 'viewfinder' ? 'full' : 'viewfinder';
+  updateSettings({ area: next });
+  pipeline?.resetTier();
+  syncControlLabels();
+};
+
+btnGroup.onclick = async () => {
+  const order: FormatGroup[] = ['all', 'qr', 'barcode'];
+  const cur = getSettings().group;
+  const next = order[(order.indexOf(cur) + 1) % order.length];
+  updateSettings({ group: next });
+  await scanner?.setGroup(next);
+  pipeline?.resetTier();
+  syncControlLabels();
+};
+
+btnMode.onclick = () => {
+  const next = getSettings().mode === 'continuous' ? 'single' : 'continuous';
+  updateSettings({ mode: next });
+  syncControlLabels();
+};
+
+$('btn-history').onclick = () =>
+  openHistorySheet({
+    onGenerateQr: (t) => openQrSheet(t),
+    onPick: (text, format) =>
+      presentForMode([{ text, format, corners: [] }]),
+  });
+
+$('btn-settings').onclick = () => openSettingsSheet();
+
+bindBatchActions(resultHooks);
 $('btn-rescan').onclick = () => {
-  closeSheet(resultSheet);
-  resumeScanning();
+  $<HTMLElement>('result-sheet').hidden = true;
+  if (scanView.classList.contains('view--active') && getSettings().mode === 'single') {
+    resumeScanning();
+  }
 };
-
-$('btn-history').onclick = () => {
-  renderHistory();
-  historySheet.hidden = false;
-};
-$('btn-history-close').onclick = () => closeSheet(historySheet);
-
-$('btn-perm-retry').onclick = () => {
-  closeSheet(permSheet);
-  void startScanning();
-};
-$('btn-perm-close').onclick = () => closeSheet(permSheet);
 
 document.querySelectorAll('.sheet__backdrop').forEach((b) => {
-  (b as HTMLElement).onclick = () => [historySheet, permSheet].forEach(closeSheet);
+  (b as HTMLElement).onclick = () =>
+    ['history-sheet', 'settings-sheet', 'qr-sheet', 'perm-sheet'].forEach(
+      (id) => ($<HTMLElement>(id).hidden = true)
+    );
 });
 
 $('file-input').onchange = async (e) => {
@@ -381,57 +289,58 @@ $('file-input').onchange = async (e) => {
   const file = input.files?.[0];
   if (!file) return;
   try {
-    const results = await scanImageFile(file);
+    const results = await scanImageFile(file, getSettings().group);
     if (results.length > 0) {
-      vibrate();
-      presentResults(results[0]);
+      if (getSettings().vibrate) vibrate(30);
+      presentForMode(results);
     } else {
-      alert('未能识别出条码，请尝试更清晰的照片');
+      toast('未能识别出条码，请尝试更清晰的照片');
     }
   } finally {
     input.value = '';
   }
 };
 
-/* 切后台自动停流省电，回来自动恢复 */
 document.addEventListener('visibilitychange', () => {
   if (document.hidden) {
     camera.setTorch(false);
-    if (!scanView.classList.contains('view--active')) return;
     pipeline?.stop();
   } else if (
     scanView.classList.contains('view--active') &&
-    resultSheet.hidden &&
-    !video.paused
+    $<HTMLElement>('result-sheet').hidden
   ) {
     resumeScanning();
   }
 });
 
-window.addEventListener('resize', clearLabels);
+window.addEventListener('resize', () => overlay?.clear());
 
-function show(view: HTMLElement): void {
-  document.querySelectorAll('.view').forEach((v) => v.classList.remove('view--active'));
-  view.classList.add('view--active');
-}
-
-function closeSheet(sheet: HTMLElement): void {
-  sheet.hidden = true;
-}
-
-function closeSheets(): void {
-  [resultSheet, historySheet, permSheet].forEach((s) => (s.hidden = true));
-}
-
-/* 启动即探测引擎能力，首屏零成本预热判定链 */
-ScannerAdapter.create().then((s) => {
+/* ---------- 启动 ---------- */
+applySettings();
+runStartupClean();
+bindSettings(() => {
+  syncControlLabels();
+  pipeline?.resetTier();
+});
+ScannerAdapter.create(getSettings().group).then(async (s) => {
   scanner = s;
+  await scanner.setGroup(getSettings().group);
   updateEngineBadge();
 });
 
-/* PWA：生产环境注册 Service Worker（离线壳 + 二次进入零下载） */
+/* PWA：生产环境注册 SW；新版本就绪时提示刷新 */
 if (import.meta.env.PROD && 'serviceWorker' in navigator) {
   window.addEventListener('load', () => {
     navigator.serviceWorker.register('./sw.js').catch(() => undefined);
+    navigator.serviceWorker.addEventListener('message', (e) => {
+      if ((e.data as { type?: string })?.type === 'UPDATED') {
+        $<HTMLElement>('sw-toast').hidden = false;
+      }
+    });
   });
+  $<HTMLElement>('sw-toast').onclick = () => location.reload();
 }
+
+if (!navigator.onLine) $<HTMLElement>('offline-badge').hidden = false;
+window.addEventListener('online', () => ($<HTMLElement>('offline-badge').hidden = true));
+window.addEventListener('offline', () => ($<HTMLElement>('offline-badge').hidden = false));
