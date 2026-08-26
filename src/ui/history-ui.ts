@@ -1,6 +1,7 @@
 import * as history from '../history.js';
 import { prettyFormat } from '../formats.js';
 import { toast } from './feedback.js';
+import { showScreen } from './router.js';
 
 const $ = <T extends HTMLElement>(id: string) => document.getElementById(id) as T;
 
@@ -19,11 +20,12 @@ interface FilterState {
 
 const filter: FilterState = { query: '', kind: '', format: '', range: 'all', favOnly: false };
 
-export function openHistorySheet(hooks: HistoryHooks): void {
+/** 打开历史页面（安卓二级屏） */
+export function openHistoryPage(hooks: HistoryHooks): void {
   buildFormatOptions();
   bindOnce(hooks);
   render(hooks);
-  $<HTMLElement>('history-sheet').hidden = false;
+  showScreen('s-history');
 }
 
 function buildFormatOptions(): void {
@@ -62,15 +64,12 @@ function bindOnce(hooks: HistoryHooks): void {
   $('h-export-json').onclick = () => history.exportJSON();
   $('h-export-csv').onclick = () => history.exportCSV();
   $('h-clear').onclick = () => {
-    if (confirm('确定清空全部历史记录？（收藏不会被删除）')) {
-      // 收藏保护：清空前先导出非收藏？直接按需求全清但保留收藏更安全
-      const items = history.query();
-      items.filter((i) => !i.fav).forEach((i) => history.remove(i.id));
+    if (confirm('清除全部未收藏记录？')) {
+      history.query().filter((i) => !i.fav).forEach((i) => history.remove(i.id));
       toast('已清除未收藏记录');
-      rerender();
+      render(hooks);
     }
   };
-  $('h-close').onclick = () => ($<HTMLElement>('history-sheet').hidden = true);
 }
 
 function render(hooks: HistoryHooks): void {
@@ -131,8 +130,7 @@ function render(hooks: HistoryHooks): void {
       history.remove(it.id);
       render(hooks);
     });
-    mkBtn('查看', () => {
-      $<HTMLElement>('history-sheet').hidden = true;
+    mkBtn('使用', () => {
       hooks.onPick(it.text, it.format);
     });
 

@@ -1,4 +1,4 @@
-﻿import './style.css';
+﻿import './material.css';
 import { CameraManager } from './camera.js';
 import { FramePipeline } from './pipeline.js';
 import type { FrameHits } from './pipeline.js';
@@ -10,15 +10,16 @@ import { getSettings, updateSettings, applySettings } from './settings.js';
 import * as history from './history.js';
 import { LabelOverlay } from './ui/labels.js';
 import { presentResults, bindBatchActions } from './ui/results.js';
-import { openHistorySheet } from './ui/history-ui.js';
-import { openSettingsSheet, bindSettings, runStartupClean } from './ui/settings-ui.js';
+import { openHistoryPage } from './ui/history-ui.js';
+import { openSettingsPage, bindSettings, runStartupClean } from './ui/settings-ui.js';
 import { openQrSheet, rememberOriginal } from './ui/qrsheet.js';
+import { initRipple, showScreen, setScanUiActive } from './ui/router.js';
 import { toast, vibrate, beep } from './ui/feedback.js';
 
 const $ = <T extends HTMLElement>(id: string) => document.getElementById(id) as T;
 
-const homeView = $<HTMLElement>('home-view');
-const scanView = $<HTMLElement>('scan-view');
+const startCard = $<HTMLElement>('start-card');
+const scanView = $<HTMLElement>('s-scan');
 const video = $<HTMLVideoElement>('camera');
 const canvas = $<HTMLCanvasElement>('frame-buffer');
 const engineBadge = $<HTMLElement>('engine-badge');
@@ -139,7 +140,8 @@ async function startScanning(): Promise<void> {
   pipeline.start();
   overlay ??= new LabelOverlay(video, (r) => presentForMode([r]));
   overlay.mount(scanView);
-  show(scanView);
+  startCard.hidden = true;
+  setScanUiActive(true);
   syncControlLabels();
 }
 
@@ -157,7 +159,9 @@ function stopScanning(): void {
 function stopScanningToHome(): void {
   stopScanning();
   closeSheets();
-  show(homeView);
+  setScanUiActive(false);
+  $<HTMLButtonElement>('btn-pause').textContent = '⏸';
+  startCard.hidden = false;
 }
 
 function updateEngineBadge(): void {
@@ -190,15 +194,30 @@ function showPermissionGuide(e: Error): void {
 }
 
 /* ---------- 视图与弹层 ---------- */
-function show(view: HTMLElement): void {
-  document.querySelectorAll('.view').forEach((v) => v.classList.remove('view--active'));
-  view.classList.add('view--active');
-}
-
 function closeSheets(): void {
-  ['result-sheet', 'history-sheet', 'settings-sheet', 'perm-sheet', 'qr-sheet'].forEach(
+  ['result-sheet', 'qr-sheet', 'perm-sheet'].forEach(
     (id) => ($<HTMLElement>(id).hidden = true)
   );
+}
+
+function goHistory(): void {
+  stopScanning();
+  setScanUiActive(false);
+  startCard.hidden = false;
+  openHistoryPage({
+    onGenerateQr: (t) => openQrSheet(t),
+    onPick: (text, format) => {
+      showScreen('s-scan');
+      presentForMode([{ text, format, corners: [] }]);
+    },
+  });
+}
+
+function goSettings(): void {
+  stopScanning();
+  setScanUiActive(false);
+  startCard.hidden = false;
+  openSettingsPage();
 }
 
 /* ---------- 相机 ---------- */
@@ -209,8 +228,10 @@ camera.onStreamLost = () => {
 };
 
 /* ---------- 事件绑定 ---------- */
+initRipple();
 $('btn-start').onclick = () => void startScanning();
 $('btn-back').onclick = stopScanningToHome;
+$('btn-gallery').onclick = () => $<HTMLInputElement>('file-input').click();
 
 $('btn-flip').onclick = async () => {
   const caps = await camera.flip(video).catch(() => null);
@@ -221,12 +242,16 @@ $('btn-flip').onclick = async () => {
 
 $('btn-pause').onclick = (e) => {
   const btn = e.currentTarget as HTMLButtonElement;
-  if (btn.textContent === '暂停') {
+  if (btn.dataset.running !== '0') {
     pipeline?.stop();
-    btn.textContent = '继续';
+    btn.textContent = '▶';
+    btn.dataset.running = '0';
+    btn.classList.remove('primary');
   } else {
     resumeScanning();
-    btn.textContent = '暂停';
+    btn.textContent = '⏸';
+    btn.dataset.running = '1';
+    btn.classList.add('primary');
   }
 };
 
@@ -260,26 +285,22 @@ btnMode.onclick = () => {
   syncControlLabels();
 };
 
-$('btn-history').onclick = () =>
-  openHistorySheet({
-    onGenerateQr: (t) => openQrSheet(t),
-    onPick: (text, format) =>
-      presentForMode([{ text, format, corners: [] }]),
-  });
-
-$('btn-settings').onclick = () => openSettingsSheet();
+$('btn-history').onclick = goHistory;
+$('btn-settings').onclick = goSettings;
+document.querySelectorAll('.nav-back').forEach(
+  (b) => ((b as HTMLElement).onclick = () => showScreen('s-scan'))
+);
 
 bindBatchActions(resultHooks);
 $('btn-rescan').onclick = () => {
   $<HTMLElement>('result-sheet').hidden = true;
-  if (scanView.classList.contains('view--active') && getSettings().mode === 'single') {
-    resumeScanning();
-  }
+  const camActive = !startCard.hidden;
+  if (getSettings().mode === 'single' && camActive) resumeScanning();
 };
 
 document.querySelectorAll('.sheet__backdrop').forEach((b) => {
   (b as HTMLElement).onclick = () =>
-    ['history-sheet', 'settings-sheet', 'qr-sheet', 'perm-sheet'].forEach(
+    ['qr-sheet', 'perm-sheet'].forEach(
       (id) => ($<HTMLElement>(id).hidden = true)
     );
 });
@@ -305,10 +326,7 @@ document.addEventListener('visibilitychange', () => {
   if (document.hidden) {
     camera.setTorch(false);
     pipeline?.stop();
-  } else if (
-    scanView.classList.contains('view--active') &&
-    $<HTMLElement>('result-sheet').hidden
-  ) {
+  } else if (startCard.hidden && $<HTMLElement>('result-sheet').hidden) {
     resumeScanning();
   }
 });

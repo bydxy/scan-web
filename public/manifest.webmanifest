@@ -1,13 +1,13 @@
 {
-  "name": "Scan · 极速扫码",
-  "short_name": "Scan",
+  "name": "扫一扫 · 极速扫码",
+  "short_name": "扫一扫",
   "description": "浏览器实时扫码：二维码/条形码本地识别，数据不出设备",
   "start_url": "./",
   "scope": "./",
   "display": "standalone",
   "orientation": "portrait",
-  "background_color": "#000000",
-  "theme_color": "#000000",
+  "background_color": "#141218",
+  "theme_color": "#6750a1",
   "icons": [
     { "src": "./icons/icon-192.png", "sizes": "192x192", "type": "image/png" },
     { "src": "./icons/icon-512.png", "sizes": "512x512", "type": "image/png" },

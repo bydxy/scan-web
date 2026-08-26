@@ -1,12 +1,13 @@
 import { getSettings, updateSettings } from '../settings.js';
 import * as history from '../history.js';
 import { toast } from './feedback.js';
+import { showScreen } from './router.js';
 
 const $ = <T extends HTMLElement>(id: string) => document.getElementById(id) as T;
 
-export function openSettingsSheet(): void {
+export function openSettingsPage(): void {
   fill();
-  $<HTMLElement>('settings-sheet').hidden = false;
+  showScreen('s-settings');
 }
 
 export function bindSettings(onChanged: () => void): void {
@@ -46,8 +47,6 @@ export function bindSettings(onChanged: () => void): void {
       setTimeout(() => location.reload(), 600);
     }
   };
-
-  $('s-close').onclick = () => ($<HTMLElement>('settings-sheet').hidden = true);
 }
 
 function fill(): void {

@@ -2,225 +2,209 @@
 <html lang="zh-CN">
   <head>
     <meta charset="UTF-8" />
-    <meta
-      name="viewport"
-      content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover"
-    />
-    <meta name="theme-color" content="#000000" />
-    <meta name="description" content="浏览器实时扫码：二维码 / 条形码本地识别，数据不出设备" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover" />
+    <meta name="theme-color" content="#141218" />
+    <meta name="description" content="扫一扫：浏览器实时扫码，二维码/条形码本地识别，数据不出设备" />
     <link rel="manifest" href="./manifest.webmanifest" />
     <link rel="apple-touch-icon" href="./icons/icon-192.png" />
+    <meta name="mobile-web-app-capable" content="yes" />
     <meta name="apple-mobile-web-app-capable" content="yes" />
     <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
-    <title>Scan · 极速扫码</title>
+    <title>扫一扫</title>
   </head>
   <body>
-    <div id="app">
-      <!-- 首屏 -->
-      <section id="home-view" class="view view--active">
-        <header class="hero">
-          <h1 class="hero__title">Scan</h1>
-          <p class="hero__subtitle">极速扫码 · 本地识别 · 数据不出设备</p>
-        </header>
-        <button id="btn-start" class="glass-btn glass-btn--primary">开始扫描</button>
-        <div class="home-actions">
-          <button id="btn-history" class="glass-btn">记录</button>
-          <label id="btn-upload" class="glass-btn">
-            相册
+    <!-- ======== 扫描页（主屏）======== -->
+    <section id="s-scan" class="screen active">
+      <video id="camera" autoplay muted playsinline disablepictureinpicture></video>
+      <canvas id="frame-buffer" hidden></canvas>
+
+      <div id="viewfinder" class="viewfinder">
+        <div class="viewfinder__window">
+          <span class="corner corner--tl"></span><span class="corner corner--tr"></span>
+          <span class="corner corner--bl"></span><span class="corner corner--br"></span>
+          <div class="scanline"></div>
+        </div>
+        <p id="scan-hint" class="viewfinder__hint">对准二维码 / 条形码 · 全屏识别</p>
+      </div>
+
+      <div id="low-hint" class="low-hint" hidden>🌙 光线较暗</div>
+
+      <!-- 首次进入卡片（相机需用户手势启动） -->
+      <div id="start-card" class="start-card">
+        <h1 class="start-title">扫一扫</h1>
+        <p class="start-sub">极速扫码 · 本地识别 · 数据不出设备</p>
+        <button id="btn-start" class="btn btn-filled btn-block" data-ripple>开始扫描</button>
+        <div class="start-row">
+          <button id="btn-history" class="btn btn-tonal" data-ripple>📋 记录</button>
+          <label class="btn btn-tonal" data-ripple>
+            🖼 相册
             <input id="file-input" type="file" accept="image/*" hidden />
           </label>
-          <button id="btn-settings" class="glass-btn">设置</button>
+          <button id="btn-settings" class="btn btn-tonal" data-ripple>⚙ 设置</button>
         </div>
         <p id="offline-badge" class="offline-badge" hidden>⚡ 离线模式 · 功能完整可用</p>
-      </section>
-
-      <!-- 扫描视图 -->
-      <section id="scan-view" class="view">
-        <video id="camera" autoplay muted playsinline disablepictureinpicture></video>
-        <canvas id="frame-buffer" hidden></canvas>
-
-        <div id="viewfinder" class="viewfinder">
-          <div class="viewfinder__window">
-            <span class="corner corner--tl"></span>
-            <span class="corner corner--tr"></span>
-            <span class="corner corner--bl"></span>
-            <span class="corner corner--br"></span>
-            <div class="scanline"></div>
-          </div>
-          <p id="scan-hint" class="viewfinder__hint">全屏识别 · 点按标注查看详情</p>
-        </div>
-
-        <div id="low-hint" class="low-hint" hidden>🌙 光线较暗，建议开灯或使用闪光灯</div>
-
-        <header class="topbar">
-          <button id="btn-back" class="glass-pill" aria-label="返回">←</button>
-          <div class="topbar__mid">
-            <span id="engine-badge" class="engine-badge"></span>
-            <button id="btn-area" class="engine-badge">取景框</button>
-            <button id="btn-group" class="engine-badge">全部码型</button>
-            <button id="btn-mode" class="engine-badge">连续</button>
-          </div>
-          <button id="btn-torch" class="glass-pill" aria-label="闪光灯" hidden>⚡</button>
-        </header>
-
-        <input id="zoom-slider" class="zoom-slider" type="range" min="100" max="400" value="100" hidden />
-
-        <footer class="dock">
-          <button id="btn-flip" class="glass-pill" aria-label="切换镜头">🔄</button>
-          <button id="btn-pause" class="glass-btn glass-btn--small">暂停</button>
-        </footer>
-      </section>
-
-      <!-- 结果 Sheet（多结果列表） -->
-      <div id="result-sheet" class="sheet" hidden>
-        <div class="sheet__backdrop"></div>
-        <div class="sheet__panel glass-panel">
-          <div class="sheet__grabber"></div>
-          <div class="sheet__head">
-            <p class="sheet__type" id="result-count">识别结果</p>
-            <div class="sheet__batch">
-              <button id="btn-batch-copy" class="mini-btn">复制全部</button>
-              <button id="btn-batch-share" class="mini-btn">分享全部</button>
-              <button id="btn-export-json" class="mini-btn">导出JSON</button>
-            </div>
-          </div>
-          <ul id="result-list" class="result-list"></ul>
-          <div class="sheet__actions">
-            <button id="btn-rescan" class="glass-btn glass-btn--primary">继续扫描</button>
-          </div>
-        </div>
       </div>
 
-      <!-- 二维码生成 Sheet -->
-      <div id="qr-sheet" class="sheet" hidden>
-        <div class="sheet__backdrop"></div>
-        <div class="sheet__panel glass-panel">
-          <div class="sheet__grabber"></div>
-          <p class="sheet__type">重新生成二维码</p>
-          <canvas id="qr-canvas" class="qr-canvas"></canvas>
-          <div class="qr-controls">
-            <label>前景<input id="qr-fg" type="color" value="#000000" /></label>
-            <label>背景<input id="qr-bg" type="color" value="#ffffff" /></label>
-            <label>尺寸
-              <select id="qr-size">
-                <option value="256">256px</option>
-                <option value="512" selected>512px</option>
-                <option value="1024">1024px</option>
-              </select>
-            </label>
-            <label>边距<input id="qr-margin" type="number" min="0" max="8" value="2" /></label>
-          </div>
-          <p id="qr-original-wrap" hidden>
-            <button id="qr-original" class="glass-btn" style="width:100%">同时保存原始截图</button>
-          </p>
-          <div class="sheet__actions">
-            <button id="qr-download" class="glass-btn glass-btn--primary">下载 PNG</button>
-            <button id="qr-copy" class="glass-btn">复制图片</button>
-            <button id="qr-share" class="glass-btn">分享</button>
-            <button id="qr-close" class="glass-btn">关闭</button>
+      <!-- 相机激活后的覆盖控件 -->
+      <header id="scan-top" class="scan-top-actions" hidden>
+        <button id="btn-back" class="icon-btn on-glass" data-ripple aria-label="返回">←</button>
+        <span id="engine-badge" class="engine-badge on-glass">…</span>
+        <span class="spacer"></span>
+        <button id="btn-area" class="chip on-glass selected" data-ripple>取景框</button>
+        <button id="btn-group" class="chip on-glass" data-ripple>全部码型</button>
+        <button id="btn-mode" class="chip on-glass" data-ripple>连续</button>
+        <button id="btn-torch" class="icon-btn on-glass" data-ripple aria-label="闪光灯" hidden>⚡</button>
+      </header>
+
+      <input id="zoom-slider" class="zoom-slider" type="range" min="100" max="400" value="100" hidden />
+
+      <footer id="scan-dock" class="scan-dock" hidden>
+        <div class="dock-slot"><button id="btn-gallery" class="icon-btn on-glass" data-ripple aria-label="相册">🖼</button></div>
+        <div class="dock-slot"><button id="btn-pause" class="fab" data-ripple aria-label="暂停">⏸</button></div>
+        <div class="dock-slot"><button id="btn-flip" class="icon-btn on-glass" data-ripple aria-label="切换镜头">🔄</button></div>
+      </footer>
+    </section>
+
+    <!-- ======== 历史页 ======== -->
+    <section id="s-history" class="screen">
+      <header class="top-bar">
+        <button class="icon-btn nav-back" data-ripple aria-label="返回">←</button>
+        <span class="tb-title">扫码记录</span>
+        <button id="h-clear" class="icon-btn" data-ripple aria-label="清空">🗑</button>
+      </header>
+      <div class="h-filters">
+        <input id="h-search" class="m-input h-search" type="search" placeholder="搜索内容 / 备注…" />
+        <select id="h-kind" class="m-field">
+          <option value="">类型</option>
+          <option value="app">App</option><option value="url">链接</option>
+          <option value="text">文本</option><option value="tel">电话</option>
+          <option value="wifi">Wi-Fi</option><option value="vcard">名片</option>
+          <option value="event">日程</option><option value="product">商品码</option>
+        </select>
+        <select id="h-format" class="m-field"><option value="">格式</option></select>
+        <select id="h-range" class="m-field">
+          <option value="all">全部</option><option value="today">今天</option><option value="week">一周内</option>
+        </select>
+        <button id="h-fav" class="chip" data-ripple>★</button>
+      </div>
+      <div class="card" style="padding:4px;flex:1;overflow-y:auto;margin-bottom:14px;">
+        <ul id="history-list" class="history-list" style="max-height:none;"></ul>
+      </div>
+      <div class="chip-row" style="justify-content:center;">
+        <button id="h-export-json" class="btn btn-outlined" data-ripple>导出 JSON</button>
+        <button id="h-export-csv" class="btn btn-outlined" data-ripple>导出 CSV</button>
+      </div>
+    </section>
+
+    <!-- ======== 设置页 ======== -->
+    <section id="s-settings" class="screen" style="overflow-y:auto;">
+      <header class="top-bar">
+        <button class="icon-btn nav-back" data-ripple aria-label="返回">←</button>
+        <span class="tb-title">设置</span>
+      </header>
+      <p class="set-section-title">通用</p>
+      <label class="set-row"><span>保存扫码历史</span><span class="m-switch"><input type="checkbox" id="s-savehist" /><span class="track"></span><span class="thumb"></span></span></label>
+      <label class="set-row"><span>历史自动清理</span>
+        <select id="s-autoclean" class="m-field">
+          <option value="0">不清理</option><option value="7">7 天</option>
+          <option value="30">30 天</option><option value="90">90 天</option>
+        </select>
+      </label>
+      <label class="set-row"><span>扫码提示音</span><span class="m-switch"><input type="checkbox" id="s-sound" /><span class="track"></span><span class="thumb"></span></span></label>
+      <label class="set-row"><span>震动反馈</span><span class="m-switch"><input type="checkbox" id="s-vibrate" /><span class="track"></span><span class="thumb"></span></span></label>
+      <label class="set-row"><span>自动打开链接</span><span class="m-switch"><input type="checkbox" id="s-autoopen" /><span class="track"></span><span class="thumb"></span></span></label>
+      <p class="set-section-title">扫描默认值</p>
+      <label class="set-row"><span>扫码模式</span>
+        <select id="s-mode" class="m-field"><option value="continuous">连续</option><option value="single">单次</option></select>
+      </label>
+      <label class="set-row"><span>识别区域</span>
+        <select id="s-area" class="m-field"><option value="viewfinder">取景框优先</option><option value="full">全屏</option></select>
+      </label>
+      <label class="set-row"><span>码型范围</span>
+        <select id="s-group" class="m-field"><option value="all">全部码型</option><option value="qr">仅二维码</option><option value="barcode">仅条形码</option></select>
+      </label>
+      <p class="set-section-title">外观与性能</p>
+      <label class="set-row"><span>主题</span>
+        <select id="s-theme" class="m-field"><option value="auto">跟随系统</option><option value="dark">深色</option><option value="light">浅色</option></select>
+      </label>
+      <label class="set-row"><span>低性能降级</span>
+        <select id="s-lowperf" class="m-field"><option value="auto">自动检测</option><option value="on">始终开启</option><option value="off">关闭</option></select>
+      </label>
+      <p class="set-section-title">数据</p>
+      <div style="padding:8px 18px 20px;">
+        <button id="s-wipe" class="btn btn-outlined btn-block" data-ripple style="color:var(--err);border-color:var(--err);">清除全部本地数据</button>
+        <p class="privacy-note" style="font-size:12px;color:var(--on-surface-v);margin-top:14px;line-height:1.7;text-align:center;">
+          🔒 所有数据仅保存在本机浏览器，不上传任何服务器<br/>离线状态下功能完整可用
+        </p>
+      </div>
+    </section>
+
+    <!-- 结果 Sheet -->
+    <div id="result-sheet" class="sheet" hidden>
+      <div class="sheet__backdrop"></div>
+      <div class="sheet__panel">
+        <div class="sheet__grabber"></div>
+        <div class="sheet__head">
+          <p class="sheet__type" id="result-count" style="margin:0;">识别结果</p>
+          <div class="sheet__batch">
+            <button id="btn-batch-copy" class="mini-btn" data-ripple>复制全部</button>
+            <button id="btn-batch-share" class="mini-btn" data-ripple>分享全部</button>
+            <button id="btn-export-json" class="mini-btn" data-ripple>导出JSON</button>
           </div>
         </div>
-      </div>
-
-      <!-- 历史 Sheet -->
-      <div id="history-sheet" class="sheet" hidden>
-        <div class="sheet__backdrop"></div>
-        <div class="sheet__panel glass-panel">
-          <div class="sheet__grabber"></div>
-          <p class="sheet__type">扫一扫记录 <small>（仅保存在本机）</small></p>
-          <div class="h-filters">
-            <input id="h-search" class="h-search" type="search" placeholder="搜索内容 / 备注…" />
-            <select id="h-kind">
-              <option value="">全部类型</option>
-              <option value="app">App</option>
-              <option value="url">链接</option>
-              <option value="text">文本</option>
-              <option value="tel">电话</option>
-              <option value="wifi">Wi-Fi</option>
-              <option value="vcard">名片</option>
-              <option value="event">日程</option>
-              <option value="product">商品码</option>
-            </select>
-            <select id="h-format"><option value="">全部格式</option></select>
-            <select id="h-range">
-              <option value="all">全部时间</option>
-              <option value="today">今天</option>
-              <option value="week">近一周</option>
-            </select>
-            <button id="h-fav" class="mini-btn">★ 收藏</button>
-          </div>
-          <ul id="history-list" class="history-list"></ul>
-          <div class="sheet__actions">
-            <button id="h-export-json" class="glass-btn">导出 JSON</button>
-            <button id="h-export-csv" class="glass-btn">导出 CSV</button>
-            <button id="h-clear" class="glass-btn">清空全部</button>
-            <button id="h-close" class="glass-btn">关闭</button>
-          </div>
+        <ul id="result-list" class="result-list"></ul>
+        <div class="sheet__actions">
+          <button id="btn-rescan" class="btn btn-filled btn-block" data-ripple>继续扫描</button>
         </div>
-      </div>
-
-      <!-- 设置 Sheet -->
-      <div id="settings-sheet" class="sheet" hidden>
-        <div class="sheet__backdrop"></div>
-        <div class="sheet__panel glass-panel">
-          <div class="sheet__grabber"></div>
-          <p class="sheet__type">设置</p>
-          <div class="set-rows">
-            <label class="set-row"><span>保存扫码历史</span><input type="checkbox" id="s-savehist" /></label>
-            <label class="set-row"><span>历史自动清理</span>
-              <select id="s-autoclean">
-                <option value="0">不清理</option>
-                <option value="7">7 天</option>
-                <option value="30">30 天</option>
-                <option value="90">90 天</option>
-              </select>
-            </label>
-            <label class="set-row"><span>扫码提示音</span><input type="checkbox" id="s-sound" /></label>
-            <label class="set-row"><span>震动反馈</span><input type="checkbox" id="s-vibrate" /></label>
-            <label class="set-row"><span>自动打开链接</span><input type="checkbox" id="s-autoopen" /></label>
-            <label class="set-row"><span>默认扫码模式</span>
-              <select id="s-mode"><option value="continuous">连续</option><option value="single">单次</option></select>
-            </label>
-            <label class="set-row"><span>默认识别区域</span>
-              <select id="s-area"><option value="viewfinder">取景框优先</option><option value="full">全屏</option></select>
-            </label>
-            <label class="set-row"><span>默认码型范围</span>
-              <select id="s-group"><option value="all">全部码型</option><option value="qr">仅二维码</option><option value="barcode">仅条形码</option></select>
-            </label>
-            <label class="set-row"><span>主题外观</span>
-              <select id="s-theme"><option value="auto">跟随系统</option><option value="dark">深色</option><option value="light">浅色</option></select>
-            </label>
-            <label class="set-row"><span>低性能降级玻璃效果</span>
-              <select id="s-lowperf"><option value="auto">自动检测</option><option value="on">始终开启</option><option value="off">关闭</option></select>
-            </label>
-            <button id="s-wipe" class="glass-btn" style="margin-top:10px">手动清除全部本地数据</button>
-            <p class="privacy-note">🔒 所有数据仅保存在本机浏览器，不上传任何服务器；离线状态下功能完整可用。</p>
-          </div>
-          <div class="sheet__actions">
-            <button id="s-close" class="glass-btn glass-btn--primary">完成</button>
-          </div>
-        </div>
-      </div>
-
-      <!-- 权限引导 -->
-      <div id="perm-sheet" class="sheet" hidden>
-        <div class="sheet__backdrop"></div>
-        <div class="sheet__panel glass-panel">
-          <div class="sheet__grabber"></div>
-          <p id="perm-title" class="sheet__type">需要相机权限</p>
-          <p id="perm-desc" class="sheet__text"></p>
-          <div class="sheet__actions">
-            <button id="btn-perm-retry" class="glass-btn glass-btn--primary">重试</button>
-            <button id="btn-perm-close" class="glass-btn">关闭</button>
-          </div>
-        </div>
-      </div>
-
-      <!-- SW 更新提示 -->
-      <div id="sw-toast" class="sw-toast glass-btn glass-btn--primary" hidden>
-        新版本可用，点击刷新
       </div>
     </div>
+
+    <!-- 二维码生成 Sheet -->
+    <div id="qr-sheet" class="sheet" hidden>
+      <div class="sheet__backdrop"></div>
+      <div class="sheet__panel">
+        <div class="sheet__grabber"></div>
+        <p class="sheet__type">重新生成二维码</p>
+        <canvas id="qr-canvas" class="qr-canvas"></canvas>
+        <div class="qr-controls">
+          <label>前景<input id="qr-fg" type="color" value="#000000" /></label>
+          <label>背景<input id="qr-bg" type="color" value="#ffffff" /></label>
+          <label>尺寸
+            <select id="qr-size" class="m-field">
+              <option value="256">256px</option><option value="512" selected>512px</option><option value="1024">1024px</option>
+            </select>
+          </label>
+          <label>边距<input id="qr-margin" class="m-field" type="number" min="0" max="8" value="2" /></label>
+        </div>
+        <p id="qr-original-wrap" hidden>
+          <button id="qr-original" class="btn btn-tonal btn-block" data-ripple>同时保存原始截图</button>
+        </p>
+        <div class="sheet__actions">
+          <button id="qr-download" class="btn btn-filled" data-ripple>下载 PNG</button>
+          <button id="qr-copy" class="btn btn-tonal" data-ripple>复制图片</button>
+          <button id="qr-share" class="btn btn-outlined" data-ripple>分享</button>
+          <button id="qr-close" class="btn btn-text" data-ripple>关闭</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- 历史 Sheet 兼容容器（列表已改为页面，此壳保留给旧引用） -->
+    <div id="history-sheet" hidden></div>
+
+    <!-- 权限对话框 -->
+    <div id="perm-sheet" class="sheet" hidden>
+      <div class="sheet__backdrop"></div>
+      <div class="sheet__panel" style="border-radius:28px;margin:24px auto;max-width:420px;padding-bottom:20px;">
+        <p class="sheet__type" id="perm-title">需要相机权限</p>
+        <p id="perm-desc" class="sheet__text"></p>
+        <div class="sheet__actions" style="margin-top:22px;">
+          <button id="btn-perm-retry" class="btn btn-filled" data-ripple>重试</button>
+          <button id="btn-perm-close" class="btn btn-text" data-ripple>取消</button>
+        </div>
+      </div>
+    </div>
+
+    <div id="sw-toast" class="btn btn-filled" data-ripple style="position:fixed;z-index:99;" hidden>新版本可用，点击刷新</div>
     <script type="module" src="/src/main.ts"></script>
   </body>
 </html>
